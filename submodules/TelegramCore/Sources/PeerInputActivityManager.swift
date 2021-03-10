@@ -46,7 +46,7 @@ private final class PeerInputActivityContext {
                 record.timer.invalidate()
                 var updateId = record.updateId
                 var recordTimestamp = record.timestamp
-                if record.activity != activity || record.timestamp + 4.0 < timestamp {
+                if record.activity != activity || record.timestamp + 1.0 < timestamp {
                     updated = true
                     updateId = nextUpdateId
                     recordTimestamp = timestamp
@@ -83,7 +83,7 @@ private final class PeerInputActivityContext {
             }, queue: self.queue)
             let updateId = nextUpdateId
             nextUpdateId += 1
-            self.activities.insert(ActivityRecord(peerId: peerId, activity: activity, id: activityId, timer: timer, episodeId: episodeId, timestamp: timestamp, updateId: updateId), at: 0)
+            self.activities.append(ActivityRecord(peerId: peerId, activity: activity, id: activityId, timer: timer, episodeId: episodeId, timestamp: timestamp, updateId: updateId))
             timer.start()
         }
         
@@ -178,9 +178,9 @@ private final class PeerInputActivityContext {
 }
 
 private final class PeerGlobalInputActivityContext {
-    private let subscribers = Bag<([PeerActivitySpace: [PeerId: PeerInputActivityRecord]]) -> Void>()
+    private let subscribers = Bag<([PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]]) -> Void>()
     
-    func addSubscriber(_ subscriber: @escaping ([PeerActivitySpace: [PeerId: PeerInputActivityRecord]]) -> Void) -> Int {
+    func addSubscriber(_ subscriber: @escaping ([PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]]) -> Void) -> Int {
         return self.subscribers.add(subscriber)
     }
     
@@ -192,7 +192,7 @@ private final class PeerGlobalInputActivityContext {
         return self.subscribers.isEmpty
     }
     
-    func notify(_ activities: [PeerActivitySpace: [PeerId: PeerInputActivityRecord]]) {
+    func notify(_ activities: [PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]]) {
         for subscriber in self.subscribers.copyItems() {
             subscriber(activities)
         }
@@ -256,21 +256,17 @@ final class PeerInputActivityManager {
         }
     }
     
-    private func collectActivities() -> [PeerActivitySpace: [PeerId: PeerInputActivityRecord]] {
+    private func collectActivities() -> [PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]] {
         assert(self.queue.isCurrent())
         
-        var dict: [PeerActivitySpace: [PeerId: PeerInputActivityRecord]] = [:]
+        var dict: [PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]] = [:]
         for (chatPeerId, context) in self.contexts {
-            var chatDict: [PeerId: PeerInputActivityRecord] = [:]
-            for (peerId, activity) in context.topActivities() {
-                chatDict[peerId] = activity
-            }
-            dict[chatPeerId] = chatDict
+            dict[chatPeerId] = context.topActivities()
         }
         return dict
     }
     
-    func allActivities() -> Signal<[PeerActivitySpace: [PeerId: PeerInputActivityRecord]], NoError> {
+    func allActivities() -> Signal<[PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]], NoError> {
         let queue = self.queue
         return Signal { [weak self] subscriber in
             let disposable = MetaDisposable()
@@ -329,7 +325,16 @@ final class PeerInputActivityManager {
                 })
                 self.contexts[chatPeerId] = context
             }
-            context.addActivity(peerId: peerId, activity: activity, timeout: 8.0, episodeId: episodeId, nextUpdateId: &self.nextUpdateId)
+            
+            let timeout: Double
+            switch activity {
+            case .speakingInGroupCall:
+                timeout = 3.0
+            default:
+                timeout = 8.0
+            }
+            
+            context.addActivity(peerId: peerId, activity: activity, timeout: timeout, episodeId: episodeId, nextUpdateId: &self.nextUpdateId)
             
             if let globalContext = self.globalContext {
                 let activities = self.collectActivities()
@@ -381,7 +386,15 @@ final class PeerInputActivityManager {
                 self?.addActivity(chatPeerId: chatPeerId, peerId: peerId, activity: activity, episodeId: episodeId)
             }
             
-            let timer = SignalKitTimer(timeout: 5.0, repeat: true, completion: {
+            let timeout: Double
+            switch activity {
+            case .speakingInGroupCall:
+                timeout = 2.0
+            default:
+                timeout = 5.0
+            }
+            
+            let timer = SignalKitTimer(timeout: timeout, repeat: true, completion: {
                 update()
             }, queue: queue)
             timer.start()

@@ -7,12 +7,18 @@ import MtProtoKit
 import SyncCore
 
 public struct PeerActivitySpace: Hashable {
-    public var peerId: PeerId
-    public var threadId: Int64?
+    public enum Category: Equatable, Hashable {
+        case global
+        case thread(Int64)
+        case voiceChat
+    }
     
-    public init(peerId: PeerId, threadId: Int64?) {
+    public var peerId: PeerId
+    public var category: Category
+    
+    public init(peerId: PeerId, category: Category) {
         self.peerId = peerId
-        self.threadId = threadId
+        self.category = category
     }
 }
 
@@ -24,13 +30,13 @@ struct PeerInputActivityRecord: Equatable {
 private final class ManagedLocalTypingActivitiesContext {
     private var disposables: [PeerActivitySpace: (PeerInputActivityRecord, MetaDisposable)] = [:]
     
-    func update(activities: [PeerActivitySpace: [PeerId: PeerInputActivityRecord]]) -> (start: [(PeerActivitySpace, PeerInputActivityRecord?, MetaDisposable)], dispose: [MetaDisposable]) {
+    func update(activities: [PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]]) -> (start: [(PeerActivitySpace, PeerInputActivityRecord?, MetaDisposable)], dispose: [MetaDisposable]) {
         var start: [(PeerActivitySpace, PeerInputActivityRecord?, MetaDisposable)] = []
         var dispose: [MetaDisposable] = []
         
         var validPeerIds = Set<PeerActivitySpace>()
         for (peerId, record) in activities {
-            if let activity = record.values.first {
+            if let activity = record.first?.1 {
                 validPeerIds.insert(peerId)
                 
                 let currentRecord = self.disposables[peerId]
@@ -70,7 +76,7 @@ private final class ManagedLocalTypingActivitiesContext {
     }
 }
 
-func managedLocalTypingActivities(activities: Signal<[PeerActivitySpace: [PeerId: PeerInputActivityRecord]], NoError>, postbox: Postbox, network: Network, accountPeerId: PeerId) -> Signal<Void, NoError> {
+func managedLocalTypingActivities(activities: Signal<[PeerActivitySpace: [(PeerId, PeerInputActivityRecord)]], NoError>, postbox: Postbox, network: Network, accountPeerId: PeerId) -> Signal<Void, NoError> {
     return Signal { subscriber in
         let context = Atomic(value: ManagedLocalTypingActivitiesContext())
         let disposable = activities.start(next: { activities in
@@ -83,7 +89,14 @@ func managedLocalTypingActivities(activities: Signal<[PeerActivitySpace: [PeerId
             }
             
             for (peerId, activity, disposable) in start {
-                disposable.set(requestActivity(postbox: postbox, network: network, accountPeerId: accountPeerId, peerId: peerId.peerId, threadId: peerId.threadId, activity: activity?.activity).start())
+                var threadId: Int64?
+                switch peerId.category {
+                case let .thread(id):
+                    threadId = id
+                default:
+                    break
+                }
+                disposable.set(requestActivity(postbox: postbox, network: network, accountPeerId: accountPeerId, peerId: peerId.peerId, threadId: threadId, activity: activity?.activity).start())
             }
         })
         return ActionDisposable {
@@ -115,6 +128,8 @@ private func actionFromActivity(_ activity: PeerInputActivity?) -> Api.SendMessa
                 return .sendMessageRecordRoundAction
             case let .uploadingInstantVideo(progress):
                 return .sendMessageUploadRoundAction(progress: progress)
+            case .speakingInGroupCall:
+                return .speakingInGroupCallAction
         }
     } else {
         return .sendMessageCancelAction

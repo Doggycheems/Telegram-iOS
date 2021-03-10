@@ -337,7 +337,11 @@ final class InstantPageControllerNode: ASDisplayNode, UIScrollViewDelegate {
         
         let maxBarHeight: CGFloat
         if !layout.safeInsets.top.isZero {
-            maxBarHeight = layout.safeInsets.top + 34.0
+            if let statusBarHeight = layout.statusBarHeight, statusBarHeight > 34.0 {
+                maxBarHeight = statusBarHeight + 34.0
+            } else {
+                maxBarHeight = layout.safeInsets.top + 34.0
+            }
         } else {
             maxBarHeight = (layout.statusBarHeight ?? 0.0) + 44.0
         }
@@ -692,7 +696,11 @@ final class InstantPageControllerNode: ASDisplayNode, UIScrollViewDelegate {
         let maxBarHeight: CGFloat
         let minBarHeight: CGFloat
         if !containerLayout.safeInsets.top.isZero {
-            maxBarHeight = containerLayout.safeInsets.top + 34.0
+            if let statusBarHeight = containerLayout.statusBarHeight, statusBarHeight > 34.0 {
+                maxBarHeight = statusBarHeight + 44.0
+            } else {
+                maxBarHeight = containerLayout.safeInsets.top + 34.0
+            }
             minBarHeight = containerLayout.safeInsets.top + 8.0
         } else {
             maxBarHeight = (containerLayout.statusBarHeight ?? 0.0) + 44.0
@@ -1190,6 +1198,7 @@ final class InstantPageControllerNode: ASDisplayNode, UIScrollViewDelegate {
                             }
                         }, sendFile: nil,
                         sendSticker: nil,
+                        requestMessageActionUrlAuth: nil,
                         present: { c, a in
                             self?.present(c, a)
                         }, dismissInput: {
@@ -1267,6 +1276,7 @@ final class InstantPageControllerNode: ASDisplayNode, UIScrollViewDelegate {
             fromPlayingVideo = true
             entries.append(InstantPageGalleryEntry(index: Int32(media.index), pageId: webPage.webpageId, media: media, caption: media.caption, credit: media.credit, location: nil))
         } else {
+            fromPlayingVideo = true
             var medias: [InstantPageMedia] = mediasFromItems(items)
             medias = medias.filter {
                 return $0.media is TelegramMediaImage || $0.media is TelegramMediaFile

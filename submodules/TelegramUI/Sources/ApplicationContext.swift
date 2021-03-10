@@ -319,6 +319,16 @@ final class AuthorizedApplicationContext {
                                     }
                                 }
                             }
+                            if let forwardInfo = firstMessage.forwardInfo, forwardInfo.flags.contains(.isImported) {
+                                return
+                            }
+                            for media in firstMessage.media {
+                                if let action = media as? TelegramMediaAction {
+                                    if case .messageAutoremoveTimeoutUpdated = action.action {
+                                        return
+                                    }
+                                }
+                            }
                             
                             if chatIsVisible {
                                 return
@@ -729,6 +739,8 @@ final class AuthorizedApplicationContext {
                 }
             }))
         })
+        
+        self.rootController.setForceInCallStatusBar((self.context.sharedContext as! SharedAccountContextImpl).currentCallStatusBarNode)
     }
     
     deinit {

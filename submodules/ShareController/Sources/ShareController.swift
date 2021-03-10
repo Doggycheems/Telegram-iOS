@@ -135,6 +135,8 @@ private func collectExternalShareItems(strings: PresentationStrings, dateTimeFor
                                     fileName = value
                                 } else if file.isVideo {
                                     fileName = "telegram_video.mp4"
+                                } else if file.isVoice {
+                                    fileName = "telegram_audio.ogg"
                                 } else {
                                     fileName = "file"
                                 }
@@ -283,6 +285,7 @@ public final class ShareController: ViewController {
     private var currentAccount: Account
     private var presentationData: PresentationData
     private var presentationDataDisposable: Disposable?
+    private let forcedTheme: PresentationTheme?
     
     private let externalShare: Bool
     private let immediateExternalShare: Bool
@@ -292,6 +295,7 @@ public final class ShareController: ViewController {
     private let immediatePeerId: PeerId?
     private let openStats: (() -> Void)?
     private let shares: Int?
+    private let fromForeignApp: Bool
     
     private let peers = Promise<([(RenderedPeer, PeerPresence?)], Peer)>()
     private let peersDisposable = MetaDisposable()
@@ -300,13 +304,21 @@ public final class ShareController: ViewController {
     
     private var defaultAction: ShareControllerAction?
     
+    public var actionCompleted: (() -> Void)?
     public var dismissed: ((Bool) -> Void)?
-    
-    public convenience init(context: AccountContext, subject: ShareControllerSubject, presetText: String? = nil, preferredAction: ShareControllerPreferredAction = .default, showInChat: ((Message) -> Void)? = nil, openStats: (() -> Void)? = nil, shares: Int? = nil, externalShare: Bool = true, immediateExternalShare: Bool = false, switchableAccounts: [AccountWithInfo] = [], immediatePeerId: PeerId? = nil) {
-        self.init(sharedContext: context.sharedContext, currentContext: context, subject: subject, presetText: presetText, preferredAction: preferredAction, showInChat: showInChat, openStats: openStats, shares: shares, externalShare: externalShare, immediateExternalShare: immediateExternalShare, switchableAccounts: switchableAccounts, immediatePeerId: immediatePeerId)
+    public var completed: (([PeerId]) -> Void)? {
+        didSet {
+            if self.isNodeLoaded {
+                self.controllerNode.completed = completed
+            }
+        }
     }
     
-    public init(sharedContext: SharedAccountContext, currentContext: AccountContext, subject: ShareControllerSubject, presetText: String? = nil, preferredAction: ShareControllerPreferredAction = .default, showInChat: ((Message) -> Void)? = nil, openStats: (() -> Void)? = nil, shares: Int? = nil, externalShare: Bool = true, immediateExternalShare: Bool = false, switchableAccounts: [AccountWithInfo] = [], immediatePeerId: PeerId? = nil) {
+    public convenience init(context: AccountContext, subject: ShareControllerSubject, presetText: String? = nil, preferredAction: ShareControllerPreferredAction = .default, showInChat: ((Message) -> Void)? = nil, openStats: (() -> Void)? = nil, fromForeignApp: Bool = false, shares: Int? = nil, externalShare: Bool = true, immediateExternalShare: Bool = false, switchableAccounts: [AccountWithInfo] = [], immediatePeerId: PeerId? = nil, forcedTheme: PresentationTheme? = nil, forcedActionTitle: String? = nil) {
+        self.init(sharedContext: context.sharedContext, currentContext: context, subject: subject, presetText: presetText, preferredAction: preferredAction, showInChat: showInChat, openStats: openStats, fromForeignApp: fromForeignApp, shares: shares, externalShare: externalShare, immediateExternalShare: immediateExternalShare, switchableAccounts: switchableAccounts, immediatePeerId: immediatePeerId, forcedTheme: forcedTheme, forcedActionTitle: forcedActionTitle)
+    }
+    
+    public init(sharedContext: SharedAccountContext, currentContext: AccountContext, subject: ShareControllerSubject, presetText: String? = nil, preferredAction: ShareControllerPreferredAction = .default, showInChat: ((Message) -> Void)? = nil, openStats: (() -> Void)? = nil, fromForeignApp: Bool = false, shares: Int? = nil, externalShare: Bool = true, immediateExternalShare: Bool = false, switchableAccounts: [AccountWithInfo] = [], immediatePeerId: PeerId? = nil, forcedTheme: PresentationTheme? = nil, forcedActionTitle: String? = nil) {
         self.sharedContext = sharedContext
         self.currentContext = currentContext
         self.currentAccount = currentContext.account
@@ -317,9 +329,14 @@ public final class ShareController: ViewController {
         self.switchableAccounts = switchableAccounts
         self.immediatePeerId = immediatePeerId
         self.openStats = openStats
+        self.fromForeignApp = fromForeignApp
         self.shares = shares
+        self.forcedTheme = forcedTheme
         
         self.presentationData = self.sharedContext.currentPresentationData.with { $0 }
+        if let forcedTheme = self.forcedTheme {
+            self.presentationData = self.presentationData.withUpdated(theme: forcedTheme)
+        }
         
         super.init(navigationBarPresentationData: nil)
         
@@ -327,9 +344,11 @@ public final class ShareController: ViewController {
         
         switch subject {
             case let .url(text):
-                self.defaultAction = ShareControllerAction(title: self.presentationData.strings.ShareMenu_CopyShareLink, action: { [weak self] in
+                self.defaultAction = ShareControllerAction(title: forcedActionTitle ?? self.presentationData.strings.ShareMenu_CopyShareLink, action: { [weak self] in
                     UIPasteboard.general.string = text
                     self?.controllerNode.cancel?()
+                    
+                    self?.actionCompleted?()
                 })
             case .text:
                 break
@@ -339,6 +358,8 @@ public final class ShareController: ViewController {
                     let url = "https://maps.apple.com/maps?ll=\(latLong)&q=\(latLong)&t=m"
                     UIPasteboard.general.string = url
                     self?.controllerNode.cancel?()
+                    
+                    self?.actionCompleted?()
                 })
                 break
             case .quote:
@@ -347,6 +368,7 @@ public final class ShareController: ViewController {
                 if case .saveToCameraRoll = preferredAction {
                     self.defaultAction = ShareControllerAction(title: self.presentationData.strings.Preview_SaveToCameraRoll, action: { [weak self] in
                         self?.saveToCameraRoll(representations: representations)
+                        self?.actionCompleted?()
                     })
                 }
             case let .media(mediaReference):
@@ -359,12 +381,14 @@ public final class ShareController: ViewController {
                 if case .saveToCameraRoll = preferredAction, canSave {
                     self.defaultAction = ShareControllerAction(title: self.presentationData.strings.Preview_SaveToCameraRoll, action: { [weak self] in
                         self?.saveToCameraRoll(mediaReference: mediaReference)
+                        self?.actionCompleted?()
                     })
                 }
             case let .messages(messages):
                 if case .saveToCameraRoll = preferredAction {
                     self.defaultAction = ShareControllerAction(title: self.presentationData.strings.Preview_SaveToCameraRoll, action: { [weak self] in
                         self?.saveToCameraRoll(messages: messages)
+                        self?.actionCompleted?()
                     })
                 } else if let message = messages.first {
                     let groupingKey: Int64? = message.groupingKey
@@ -381,6 +405,7 @@ public final class ShareController: ViewController {
                         self.defaultAction = ShareControllerAction(title: self.presentationData.strings.SharedMedia_ViewInChat, action: { [weak self] in
                             self?.controllerNode.cancel?()
                             showInChat(message)
+                            self?.actionCompleted?()
                         })
                     } else if let chatPeer = message.peers[message.id.peerId] as? TelegramChannel, messages.count == 1 || sameGroupingKey {
                         if message.id.namespace == Namespaces.Message.Cloud {
@@ -398,6 +423,7 @@ public final class ShareController: ViewController {
                                     }
                                 })
                                 strongSelf.controllerNode.cancel?()
+                                strongSelf.actionCompleted?()
                             })
                         }
                     }
@@ -410,6 +436,7 @@ public final class ShareController: ViewController {
             self.defaultAction = ShareControllerAction(title: action.title, action: { [weak self] in
                 self?.controllerNode.cancel?()
                 action.action()
+                self?.actionCompleted?()
             })
         }
         
@@ -441,7 +468,8 @@ public final class ShareController: ViewController {
                 return
             }
             strongSelf.present(standardTextAlertController(theme: AlertControllerTheme(presentationData: strongSelf.presentationData), title: title, text: text, actions: [TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
-        }, externalShare: self.externalShare, immediateExternalShare: self.immediateExternalShare, immediatePeerId: self.immediatePeerId, shares: self.shares)
+        }, externalShare: self.externalShare, immediateExternalShare: self.immediateExternalShare, immediatePeerId: self.immediatePeerId, shares: self.shares, fromForeignApp: self.fromForeignApp, forcedTheme: self.forcedTheme)
+        self.controllerNode.completed = self.completed
         self.controllerNode.dismiss = { [weak self] shared in
             self?.presentingViewController?.dismiss(animated: false, completion: nil)
             self?.dismissed?(shared)
@@ -457,6 +485,7 @@ public final class ShareController: ViewController {
             guard let strongSelf = self else {
                 return .complete()
             }
+                        
             var shareSignals: [Signal<[MessageId?], NoError>] = []
             switch strongSelf.subject {
             case let .url(url):
@@ -680,7 +709,7 @@ public final class ShareController: ViewController {
                                     let shareToInstagram = ShareToInstagramActivity(action: { sharedItems in
                                         let renderer = MessageStoryRenderer(context: strongSelf.currentContext, messages: messages)
                                         
-                                        let layout = ContainerViewLayout(size: CGSize(width: 414.0, height: 896.0), metrics: LayoutMetrics(widthClass: .compact, heightClass: .compact), deviceMetrics: .iPhoneX, intrinsicInsets: UIEdgeInsets(), safeInsets: UIEdgeInsets(), statusBarHeight: 0.0, inputHeight: nil, inputHeightIsInteractivellyChanging: false, inVoiceOver: false)
+                                        let layout = ContainerViewLayout(size: CGSize(width: 414.0, height: 896.0), metrics: LayoutMetrics(widthClass: .compact, heightClass: .compact), deviceMetrics: .iPhoneX, intrinsicInsets: UIEdgeInsets(), safeInsets: UIEdgeInsets(), additionalInsets: UIEdgeInsets(), statusBarHeight: 0.0, inputHeight: nil, inputHeightIsInteractivellyChanging: false, inVoiceOver: false)
                                         renderer.update(layout: layout) { image in
                                             if let data = image?.pngData() {
                                                 let pasteboardItems: [[String: Any]] = [["com.instagram.sharedSticker.backgroundImage": data,
@@ -692,13 +721,18 @@ public final class ShareController: ViewController {
                                     })
                                     activities = [shareToInstagram]
                                 }
-                                let activityController = UIActivityViewController(activityItems: activityItems, applicationActivities: activities)
                                 
-                                if let window = strongSelf.view.window, let rootViewController = window.rootViewController {
-                                    activityController.popoverPresentationController?.sourceView = window
-                                    activityController.popoverPresentationController?.sourceRect = CGRect(origin: CGPoint(x: window.bounds.width / 2.0, y: window.bounds.size.height - 1.0), size: CGSize(width: 1.0, height: 1.0))
-                                    rootViewController.present(activityController, animated: true, completion: nil)
-                                }
+                                let _ = (strongSelf.didAppearPromise.get()
+                                |> filter { $0 }
+                                |> take(1)
+                                |> deliverOnMainQueue).start(next: { [weak self] _ in
+                                    let activityController = UIActivityViewController(activityItems: activityItems, applicationActivities: activities)
+                                    if let strongSelf = self, let window = strongSelf.view.window, let rootViewController = window.rootViewController {
+                                        activityController.popoverPresentationController?.sourceView = window
+                                        activityController.popoverPresentationController?.sourceRect = CGRect(origin: CGPoint(x: window.bounds.width / 2.0, y: window.bounds.size.height - 1.0), size: CGSize(width: 1.0, height: 1.0))
+                                        rootViewController.present(activityController, animated: true, completion: nil)
+                                    }
+                                })
                             }
                             return .done
                     }
@@ -756,12 +790,16 @@ public final class ShareController: ViewController {
         super.loadView()
     }
     
+    let didAppearPromise = ValuePromise<Bool>(false, ignoreRepeated: true)
     override public func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         
         if !self.animatedIn {
             self.animatedIn = true
-            self.controllerNode.animateIn()
+            self.didAppearPromise.set(true)
+            if !self.immediateExternalShare {
+                self.controllerNode.animateIn()
+            }
         }
     }
     
@@ -1050,4 +1088,14 @@ private class ShareToInstagramActivity: UIActivity {
         self.action(self.activityItems)
         activityDidFinish(true)
     }
+}
+
+
+public func presentExternalShare(context: AccountContext, text: String, parentController: ViewController) {
+    let activityController = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+    if let window = parentController.view.window {
+        activityController.popoverPresentationController?.sourceView = window
+        activityController.popoverPresentationController?.sourceRect = CGRect(origin: CGPoint(x: window.bounds.width / 2.0, y: window.bounds.size.height - 1.0), size: CGSize(width: 1.0, height: 1.0))
+    }
+    context.sharedContext.applicationBindings.presentNativeController(activityController)
 }

@@ -95,10 +95,17 @@ func contactContextMenuItems(context: AccountContext, peerId: PeerId, contactsCo
                             if let navigationController = (contactsController?.navigationController as? NavigationController) {
                                 context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .peer(peerId), peekData: nil))
                             }
-                        }, error: { _ in
+                        }, error: { error in
                             if let contactsController = contactsController {
                                 let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-                                contactsController.present(textAlertController(context: context, title: nil, text: presentationData.strings.Login_UnknownError, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})]), in: .window(.root))
+                                let text: String
+                                switch error {
+                                    case .limitExceeded:
+                                        text = presentationData.strings.TwoStepAuth_FloodError
+                                    default:
+                                        text = presentationData.strings.Login_UnknownError
+                                }
+                                contactsController.present(textAlertController(context: context, title: nil, text: text, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})]), in: .window(.root))
                             }
                         }))
                     }
@@ -121,86 +128,20 @@ func contactContextMenuItems(context: AccountContext, peerId: PeerId, contactsCo
         }
         
         if canCall {
-            items.append(.action(ContextMenuActionItem(text: strings.ContactList_Context_Call, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Call"), color: theme.contextMenu.primaryColor) }, action: { _, f in
-                if let contactsController = contactsController {
-                    let callResult = context.sharedContext.callManager?.requestCall(context: context, peerId: peerId, isVideo: false, endCurrentIfAny: false)
-                    if let callResult = callResult, case let .alreadyInProgress(currentPeerId) = callResult {
-                        if currentPeerId == peerId {
-                            context.sharedContext.navigateToCurrentCall()
-                        } else {
-                            let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-                            let _ = (context.account.postbox.transaction { transaction -> (Peer?, Peer?) in
-                                return (transaction.getPeer(peerId), currentPeerId.flatMap(transaction.getPeer))
-                            } |> deliverOnMainQueue).start(next: { [weak contactsController] peer, current in
-                                if let contactsController = contactsController, let peer = peer {
-                                    if let current = current {
-                                        contactsController.present(textAlertController(context: context, title: presentationData.strings.Call_CallInProgressTitle, text: presentationData.strings.Call_CallInProgressMessage(current.compactDisplayTitle, peer.compactDisplayTitle).0, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_Cancel, action: {}), TextAlertAction(type: .genericAction, title: presentationData.strings.Common_OK, action: {
-                                            let _ = context.sharedContext.callManager?.requestCall(context: context, peerId: peerId, isVideo: false, endCurrentIfAny: true)
-                                        })]), in: .window(.root))
-                                    } else {
-                                        contactsController.present(textAlertController(context: context, title: presentationData.strings.Call_CallInProgressTitle, text: presentationData.strings.Call_ExternalCallInProgressMessage, actions: [TextAlertAction(type: .genericAction, title: presentationData.strings.Common_OK, action: {
-                                        })]), in: .window(.root))
-                                    }
-                                }
-                            })
-                            
-                            /*let _ = (context.account.postbox.transaction { transaction -> (Peer?, Peer?) in
-                                return (transaction.getPeer(peerId), transaction.getPeer(currentPeerId))
-                            }
-                            |> deliverOnMainQueue).start(next: { [weak contactsController] peer, current in
-                                if let contactsController = contactsController, let peer = peer, let current = current {
-                                    contactsController.present(textAlertController(context: context, title: presentationData.strings.Call_CallInProgressTitle, text: presentationData.strings.Call_CallInProgressMessage(current.compactDisplayTitle, peer.compactDisplayTitle).0, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_Cancel, action: {}), TextAlertAction(type: .genericAction, title: presentationData.strings.Common_OK, action: {
-                                        let _ = context.sharedContext.callManager?.requestCall(context: context, peerId: peerId, isVideo: false, endCurrentIfAny: true)
-                                    })]), in: .window(.root))
-                                }
-                            })*/
-                        }
-                    }
-                }
+            items.append(.action(ContextMenuActionItem(text: strings.ContactList_Context_Call, icon: { theme in
+                generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Call"), color: theme.contextMenu.primaryColor)
+            }, action: { _, f in
+                context.requestCall(peerId: peerId, isVideo: false, completion: {})
                 f(.default)
             })))
         }
         if canVideoCall {
-            items.append(.action(ContextMenuActionItem(text: strings.ContactList_Context_VideoCall, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Call"), color: theme.contextMenu.primaryColor) }, action: { _, f in
-                if let contactsController = contactsController {
-                    let callResult = context.sharedContext.callManager?.requestCall(context: context, peerId: peerId, isVideo: true, endCurrentIfAny: false)
-                    if let callResult = callResult, case let .alreadyInProgress(currentPeerId) = callResult {
-                        if currentPeerId == peerId {
-                            context.sharedContext.navigateToCurrentCall()
-                        } else {
-                            let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-                            let _ = (context.account.postbox.transaction { transaction -> (Peer?, Peer?) in
-                                return (transaction.getPeer(peerId), currentPeerId.flatMap(transaction.getPeer))
-                            } |> deliverOnMainQueue).start(next: { [weak contactsController] peer, current in
-                                if let contactsController = contactsController, let peer = peer {
-                                    if let current = current {
-                                        contactsController.present(textAlertController(context: context, title: presentationData.strings.Call_CallInProgressTitle, text: presentationData.strings.Call_CallInProgressMessage(current.compactDisplayTitle, peer.compactDisplayTitle).0, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_Cancel, action: {}), TextAlertAction(type: .genericAction, title: presentationData.strings.Common_OK, action: {
-                                            let _ = context.sharedContext.callManager?.requestCall(context: context, peerId: peerId, isVideo: true, endCurrentIfAny: true)
-                                        })]), in: .window(.root))
-                                    } else {
-                                        contactsController.present(textAlertController(context: context, title: presentationData.strings.Call_CallInProgressTitle, text: presentationData.strings.Call_ExternalCallInProgressMessage, actions: [TextAlertAction(type: .genericAction, title: presentationData.strings.Common_OK, action: {
-                                        })]), in: .window(.root))
-                                    }
-                                }
-                            })
-                            
-                            /*let _ = (context.account.postbox.transaction { transaction -> (Peer?, Peer?) in
-                                return (transaction.getPeer(peerId), transaction.getPeer(currentPeerId))
-                            }
-                            |> deliverOnMainQueue).start(next: { [weak contactsController] peer, current in
-                                if let contactsController = contactsController, let peer = peer, let current = current {
-                                    contactsController.present(textAlertController(context: context, title: presentationData.strings.Call_CallInProgressTitle, text: presentationData.strings.Call_CallInProgressMessage(current.compactDisplayTitle, peer.compactDisplayTitle).0, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_Cancel, action: {}), TextAlertAction(type: .genericAction, title: presentationData.strings.Common_OK, action: {
-                                        let _ = context.sharedContext.callManager?.requestCall(context: context, peerId: peerId, isVideo: true, endCurrentIfAny: true)
-                                    })]), in: .window(.root))
-                                }
-                            })*/
-                        }
-                    }
-                }
+            items.append(.action(ContextMenuActionItem(text: strings.ContactList_Context_VideoCall, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/VideoCall"), color: theme.contextMenu.primaryColor)
+            }, action: { _, f in
+                context.requestCall(peerId: peerId, isVideo: true, completion: {})
                 f(.default)
             })))
         }
-        
         return items
     }
 }
