@@ -257,21 +257,18 @@ private struct ChannelBannedMemberControllerState: Equatable {
     var updating: Bool = false
 }
 
-private func completeRights(_ flags: TelegramChatBannedRightsFlags) -> TelegramChatBannedRightsFlags {
+func completeRights(_ flags: TelegramChatBannedRightsFlags) -> TelegramChatBannedRightsFlags {
     var result = flags
     result.remove(.banReadMessages)
     if result.contains(.banSendGifs) {
         result.insert(.banSendStickers)
         result.insert(.banSendGifs)
         result.insert(.banSendGames)
+        result.insert(.banSendInline)
     } else {
         result.remove(.banSendStickers)
         result.remove(.banSendGifs)
         result.remove(.banSendGames)
-    }
-    if result.contains(.banEmbedLinks) {
-        result.insert(.banSendInline)
-    } else {
         result.remove(.banSendInline)
     }
     return result
@@ -509,7 +506,7 @@ public func channelBannedMemberController(context: AccountContext, peerId: PeerI
                 state.updating = true
                 return state
             }
-            updateRightsDisposable.set((context.peerChannelMemberCategoriesContextsManager.updateMemberBannedRights(account: context.account, peerId: peerId, memberId: memberId, bannedRights: nil)
+            updateRightsDisposable.set((context.peerChannelMemberCategoriesContextsManager.updateMemberBannedRights(engine: context.engine, peerId: peerId, memberId: memberId, bannedRights: nil)
                 |> deliverOnMainQueue).start(error: { _ in
                     
                 }, completed: {
@@ -653,7 +650,7 @@ public func channelBannedMemberController(context: AccountContext, peerId: PeerI
                                 }
                                 
                                 if peerId.namespace == Namespaces.Peer.CloudGroup {
-                                    let signal = convertGroupToSupergroup(account: context.account, peerId: peerId)
+                                    let signal = context.engine.peers.convertGroupToSupergroup(peerId: peerId)
                                     |> map(Optional.init)
                                     |> `catch` { error -> Signal<PeerId?, NoError> in
                                         switch error {
@@ -670,7 +667,7 @@ public func channelBannedMemberController(context: AccountContext, peerId: PeerI
                                         guard let upgradedPeerId = upgradedPeerId else {
                                             return .single(nil)
                                         }
-                                        return context.peerChannelMemberCategoriesContextsManager.updateMemberBannedRights(account: context.account, peerId: upgradedPeerId, memberId: memberId, bannedRights: cleanResolvedRights)
+                                        return context.peerChannelMemberCategoriesContextsManager.updateMemberBannedRights(engine: context.engine, peerId: upgradedPeerId, memberId: memberId, bannedRights: cleanResolvedRights)
                                         |> mapToSignal { _ -> Signal<PeerId?, NoError> in
                                             return .complete()
                                         }
@@ -703,7 +700,7 @@ public func channelBannedMemberController(context: AccountContext, peerId: PeerI
                                         }
                                     }))
                                 } else {
-                                    updateRightsDisposable.set((context.peerChannelMemberCategoriesContextsManager.updateMemberBannedRights(account: context.account, peerId: peerId, memberId: memberId, bannedRights: cleanResolvedRights)
+                                    updateRightsDisposable.set((context.peerChannelMemberCategoriesContextsManager.updateMemberBannedRights(engine: context.engine, peerId: peerId, memberId: memberId, bannedRights: cleanResolvedRights)
                                         |> deliverOnMainQueue).start(error: { _ in
                                             
                                         }, completed: {

@@ -228,7 +228,7 @@ private enum GroupStickerPackEntry: ItemListNodeEntry {
             case let .packsTitle(_, text):
                 return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: self.section)
             case let .pack(_, _, _, info, topItem, count, playAnimatedStickers, selected):
-                return ItemListStickerPackItem(presentationData: presentationData, account: arguments.account, packInfo: info, itemCount: count, topItem: topItem, unread: false, control: selected ? .selection : .none, editing: ItemListStickerPackItemEditing(editable: false, editing: false, revealed: false, reorderable: false), enabled: true, playAnimatedStickers: playAnimatedStickers, sectionId: self.section, action: {
+                return ItemListStickerPackItem(presentationData: presentationData, account: arguments.account, packInfo: info, itemCount: count, topItem: topItem, unread: false, control: selected ? .selection : .none, editing: ItemListStickerPackItemEditing(editable: false, editing: false, revealed: false, reorderable: false, selectable: false), enabled: true, playAnimatedStickers: playAnimatedStickers, sectionId: self.section, action: {
                     if selected {
                         arguments.openStickerPack(info)
                     } else {
@@ -237,6 +237,7 @@ private enum GroupStickerPackEntry: ItemListNodeEntry {
                 }, setPackIdWithRevealedOptions: { _, _ in
                 }, addPack: {
                 }, removePack: {
+                }, toggleSelected: {
                 })
             case let .currentPack(_, theme, strings, content):
                 return GroupStickerPackCurrentItem(theme: theme, strings: strings, account: arguments.account, content: content, sectionId: self.section, action: {
@@ -322,7 +323,7 @@ public func groupStickerPackSetupController(context: AccountContext, peerId: Pee
     
     let initialData = Promise<InitialStickerPackData?>()
     if let currentPackInfo = currentPackInfo {
-        initialData.set(cachedStickerPack(postbox: context.account.postbox, network: context.account.network, reference: .id(id: currentPackInfo.id.id, accessHash: currentPackInfo.accessHash), forceRemote: false)
+        initialData.set(context.engine.stickers.cachedStickerPack(reference: .id(id: currentPackInfo.id.id, accessHash: currentPackInfo.accessHash), forceRemote: false)
         |> map { result -> InitialStickerPackData? in
             switch result {
                 case .none:
@@ -362,7 +363,7 @@ public func groupStickerPackSetupController(context: AccountContext, peerId: Pee
                     }
                 }
                 return .single((searchText, .searching))
-                |> then((loadedStickerPack(postbox: context.account.postbox, network: context.account.network, reference: .name(searchText.lowercased()), forceActualized: false) |> delay(0.3, queue: Queue.concurrentDefaultQueue()))
+                |> then((context.engine.stickers.loadedStickerPack(reference: .name(searchText.lowercased()), forceActualized: false) |> delay(0.3, queue: Queue.concurrentDefaultQueue()))
                 |> mapToSignal { value -> Signal<(String, GroupStickerPackSearchState), NoError> in
                     switch value {
                         case .fetching:
@@ -401,7 +402,7 @@ public func groupStickerPackSetupController(context: AccountContext, peerId: Pee
     }, updateSearchText: { text in
         searchText.set(text)
     }, openStickersBot: {
-        resolveDisposable.set((resolvePeerByName(account: context.account, name: "stickers") |> deliverOnMainQueue).start(next: { peerId in
+        resolveDisposable.set((context.engine.peers.resolvePeerByName(name: "stickers") |> deliverOnMainQueue).start(next: { peerId in
             if let peerId = peerId {
                 dismissImpl?()
                 navigateToChatControllerImpl?(peerId)
@@ -447,7 +448,7 @@ public func groupStickerPackSetupController(context: AccountContext, peerId: Pee
                             state.isSaving = true
                             return state
                         }
-                        saveDisposable.set((updateGroupSpecificStickerset(postbox: context.account.postbox, network: context.account.network, peerId: peerId, info: info)
+                        saveDisposable.set((context.engine.peers.updateGroupSpecificStickerset(peerId: peerId, info: info)
                         |> deliverOnMainQueue).start(error: { _ in
                             updateState { state in
                                 var state = state

@@ -22,9 +22,56 @@ public enum AvatarGalleryEntryId: Hashable {
     case resource(String)
 }
 
+public func peerInfoProfilePhotos(context: AccountContext, peerId: PeerId) -> Signal<Any, NoError> {
+    return context.account.postbox.combinedView(keys: [.basicPeer(peerId)])
+    |> mapToSignal { view -> Signal<[AvatarGalleryEntry]?, NoError> in
+        guard let peer = (view.views[.basicPeer(peerId)] as? BasicPeerView)?.peer else {
+            return .single(nil)
+        }
+        return initialAvatarGalleryEntries(account: context.account, peer: peer)
+    }
+    |> distinctUntilChanged
+    |> mapToSignal { entries -> Signal<(Bool, [AvatarGalleryEntry])?, NoError> in
+        if let entries = entries {
+            if let firstEntry = entries.first {
+                return context.account.postbox.loadedPeerWithId(peerId)
+                |> mapToSignal { peer -> Signal<(Bool, [AvatarGalleryEntry])?, NoError>in
+                    return fetchedAvatarGalleryEntries(engine: context.engine, account: context.account, peer: peer, firstEntry: firstEntry)
+                    |> map(Optional.init)
+                }
+            } else {
+                return .single((true, []))
+            }
+        } else {
+            return fetchAndUpdateCachedPeerData(accountPeerId: context.account.peerId, peerId: peerId, network: context.account.network, postbox: context.account.postbox)
+            |> map { _ -> (Bool, [AvatarGalleryEntry])? in
+                return nil
+            }
+        }
+    }
+    |> map { items -> Any in
+        if let items = items {
+            return items
+        } else {
+            return peerInfoProfilePhotos(context: context, peerId: peerId)
+        }
+    }
+}
+
+public func peerInfoProfilePhotosWithCache(context: AccountContext, peerId: PeerId) -> Signal<(Bool, [AvatarGalleryEntry]), NoError> {
+    return context.peerChannelMemberCategoriesContextsManager.profilePhotos(postbox: context.account.postbox, network: context.account.network, peerId: peerId, fetch: peerInfoProfilePhotos(context: context, peerId: peerId))
+    |> map { items -> (Bool, [AvatarGalleryEntry]) in
+        return items as? (Bool, [AvatarGalleryEntry]) ?? (true, [])
+    }
+}
+
 public enum AvatarGalleryEntry: Equatable {
     case topImage([ImageRepresentationWithReference], [VideoRepresentationWithReference], Peer?, GalleryItemIndexData?, Data?, String?)
     case image(MediaId, TelegramMediaImageReference?, [ImageRepresentationWithReference], [VideoRepresentationWithReference], Peer?, Int32?, GalleryItemIndexData?, MessageId?, Data?, String?)
+    
+    public init(representation: TelegramMediaImageRepresentation, peer: Peer) {
+        self = .topImage([ImageRepresentationWithReference(representation: representation, reference: MediaResourceReference.standalone(resource: representation.resource))], [], peer, nil, nil, nil)
+    }
     
     public var id: AvatarGalleryEntryId {
         switch self {
@@ -115,22 +162,22 @@ public final class AvatarGalleryControllerPresentationArguments {
 }
 
 public func normalizeEntries(_ entries: [AvatarGalleryEntry]) -> [AvatarGalleryEntry] {
-       var updatedEntries: [AvatarGalleryEntry] = []
-       let count: Int32 = Int32(entries.count)
-       var index: Int32 = 0
-       for entry in entries {
-           let indexData = GalleryItemIndexData(position: index, totalCount: count)
-           if case let .topImage(representations, videoRepresentations, peer, _, immediateThumbnailData, category) = entry {
-               updatedEntries.append(.topImage(representations, videoRepresentations, peer, indexData, immediateThumbnailData, category))
-           } else if case let .image(id, reference, representations, videoRepresentations, peer, date, _, messageId, immediateThumbnailData, category) = entry {
-               updatedEntries.append(.image(id, reference, representations, videoRepresentations, peer, date, indexData, messageId, immediateThumbnailData, category))
-           }
-           index += 1
+   var updatedEntries: [AvatarGalleryEntry] = []
+   let count: Int32 = Int32(entries.count)
+   var index: Int32 = 0
+   for entry in entries {
+       let indexData = GalleryItemIndexData(position: index, totalCount: count)
+       if case let .topImage(representations, videoRepresentations, peer, _, immediateThumbnailData, category) = entry {
+           updatedEntries.append(.topImage(representations, videoRepresentations, peer, indexData, immediateThumbnailData, category))
+       } else if case let .image(id, reference, representations, videoRepresentations, peer, date, _, messageId, immediateThumbnailData, category) = entry {
+           updatedEntries.append(.image(id, reference, representations, videoRepresentations, peer, date, indexData, messageId, immediateThumbnailData, category))
        }
-       return updatedEntries
+       index += 1
    }
+   return updatedEntries
+}
 
-public func initialAvatarGalleryEntries(account: Account, peer: Peer) -> Signal<[AvatarGalleryEntry], NoError> {
+public func initialAvatarGalleryEntries(account: Account, peer: Peer) -> Signal<[AvatarGalleryEntry]?, NoError> {
     var initialEntries: [AvatarGalleryEntry] = []
     if !peer.profileImageRepresentations.isEmpty, let peerReference = PeerReference(peer) {
         initialEntries.append(.topImage(peer.profileImageRepresentations.map({ ImageRepresentationWithReference(representation: $0, reference: MediaResourceReference.avatar(peer: peerReference, resource: $0.resource)) }), [], peer, nil, nil, nil))
@@ -155,7 +202,7 @@ public func initialAvatarGalleryEntries(account: Account, peer: Peer) -> Signal<
                 }
                 return [.image(photo.imageId, photo.reference, representations, photo.videoRepresentations.map({ VideoRepresentationWithReference(representation: $0, reference: MediaResourceReference.avatarList(peer: peerReference, resource: $0.resource)) }), peer, nil, nil, nil, photo.immediateThumbnailData, nil)]
             } else {
-                return []
+                return cachedData != nil ? [] : nil
             }
         }
     } else {
@@ -163,12 +210,15 @@ public func initialAvatarGalleryEntries(account: Account, peer: Peer) -> Signal<
     }
 }
 
-public func fetchedAvatarGalleryEntries(account: Account, peer: Peer) -> Signal<[AvatarGalleryEntry], NoError> {
+public func fetchedAvatarGalleryEntries(engine: TelegramEngine, account: Account, peer: Peer) -> Signal<[AvatarGalleryEntry], NoError> {
     return initialAvatarGalleryEntries(account: account, peer: peer)
+    |> map { entries -> [AvatarGalleryEntry] in
+        return entries ?? []
+    }
     |> mapToSignal { initialEntries in
         return .single(initialEntries)
         |> then(
-            requestPeerPhotos(postbox: account.postbox, network: account.network, peerId: peer.id)
+            engine.peers.requestPeerPhotos(peerId: peer.id)
             |> map { photos -> [AvatarGalleryEntry] in
                 var result: [AvatarGalleryEntry] = []
                 if photos.isEmpty {
@@ -219,11 +269,11 @@ public func fetchedAvatarGalleryEntries(account: Account, peer: Peer) -> Signal<
     }
 }
 
-public func fetchedAvatarGalleryEntries(account: Account, peer: Peer, firstEntry: AvatarGalleryEntry) -> Signal<(Bool, [AvatarGalleryEntry]), NoError> {
+public func fetchedAvatarGalleryEntries(engine: TelegramEngine, account: Account, peer: Peer, firstEntry: AvatarGalleryEntry) -> Signal<(Bool, [AvatarGalleryEntry]), NoError> {
     let initialEntries = [firstEntry]
     return Signal<(Bool, [AvatarGalleryEntry]), NoError>.single((false, initialEntries))
     |> then(
-        requestPeerPhotos(postbox: account.postbox, network: account.network, peerId: peer.id)
+        engine.peers.requestPeerPhotos(peerId: peer.id)
         |> map { photos -> (Bool, [AvatarGalleryEntry]) in
             var result: [AvatarGalleryEntry] = []
             let initialEntries = [firstEntry]
@@ -353,10 +403,15 @@ public class AvatarGalleryController: ViewController, StandalonePresentableContr
         if let remoteEntries = remoteEntries {
             remoteEntriesSignal = remoteEntries.get()
         } else {
-            remoteEntriesSignal = fetchedAvatarGalleryEntries(account: context.account, peer: peer)
+            remoteEntriesSignal = fetchedAvatarGalleryEntries(engine: context.engine, account: context.account, peer: peer)
         }
         
-        let entriesSignal: Signal<[AvatarGalleryEntry], NoError> = skipInitial ? remoteEntriesSignal : (initialAvatarGalleryEntries(account: context.account, peer: peer) |> then(remoteEntriesSignal))
+        let initialSignal = initialAvatarGalleryEntries(account: context.account, peer: peer)
+        |> map { entries -> [AvatarGalleryEntry] in
+            return entries ?? []
+        }
+        
+        let entriesSignal: Signal<[AvatarGalleryEntry], NoError> = skipInitial ? remoteEntriesSignal : (initialSignal |> then(remoteEntriesSignal))
         
         let presentationData = self.presentationData
         
@@ -634,7 +689,7 @@ public class AvatarGalleryController: ViewController, StandalonePresentableContr
         super.containerLayoutUpdated(layout, transition: transition)
         
         self.galleryNode.frame = CGRect(origin: CGPoint(), size: layout.size)
-        self.galleryNode.containerLayoutUpdated(layout, navigationBarHeight: self.navigationHeight, transition: transition)
+        self.galleryNode.containerLayoutUpdated(layout, navigationBarHeight: self.navigationLayout(layout: layout).navigationFrame.maxY, transition: transition)
         
         if !self.adjustedForInitialPreviewingLayout && self.isPresentedInPreviewingContext() {
             self.adjustedForInitialPreviewingLayout = true
@@ -830,7 +885,7 @@ public class AvatarGalleryController: ViewController, StandalonePresentableContr
                         }
                     } else {
                         if let messageId = messageId {
-                            let _ = deleteMessagesInteractively(account: self.context.account, messageIds: [messageId], type: .forEveryone).start()
+                            let _ = self.context.engine.messages.deleteMessagesInteractively(messageIds: [messageId], type: .forEveryone).start()
                         }
                         
                         if entry == self.entries.first {

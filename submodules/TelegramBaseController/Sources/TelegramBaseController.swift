@@ -94,19 +94,7 @@ open class TelegramBaseController: ViewController, KeyShortcutResponder {
     private var presentationDataDisposable: Disposable?
     private var playlistPreloadDisposable: Disposable?
     
-    override open var navigationHeight: CGFloat {
-        return super.navigationHeight + self.additionalHeight
-    }
-    
-    override open var navigationInsetHeight: CGFloat {
-        return super.navigationInsetHeight + self.additionalHeight
-    }
-    
-    override open var visualNavigationInsetHeight: CGFloat {
-        return super.visualNavigationInsetHeight + self.additionalHeight
-    }
-    
-    public var additionalHeight: CGFloat {
+    override open var additionalNavigationBarHeight: CGFloat {
         var height: CGFloat = 0.0
         if let _ = self.groupCallAccessoryPanel {
             height += 50.0
@@ -118,10 +106,6 @@ open class TelegramBaseController: ViewController, KeyShortcutResponder {
             height += MediaNavigationAccessoryHeaderNode.minimizedHeight
         }
         return height
-    }
-    
-    open var primaryNavigationHeight: CGFloat {
-        return super.navigationHeight
     }
     
     public init(context: AccountContext, navigationBarPresentationData: NavigationBarPresentationData?, mediaAccessoryPanelVisibility: MediaAccessoryPanelVisibility, locationBroadcastPanelSource: LocationBroadcastPanelSource, groupCallPanelSource: GroupCallPanelSource) {
@@ -333,7 +317,7 @@ open class TelegramBaseController: ViewController, KeyShortcutResponder {
                     if previousCurrentGroupCall != nil && currentGroupCall == nil && availableState?.participantCount == 1 {
                         panelData = nil
                     } else {
-                        panelData = currentGroupCall != nil || availableState?.participantCount == 0 ? nil : availableState
+                        panelData = currentGroupCall != nil || (availableState?.participantCount == 0 && availableState?.info.scheduleTimestamp == nil) ? nil : availableState
                     }
                     
                     let wasEmpty = strongSelf.groupCallPanelData == nil
@@ -376,11 +360,25 @@ open class TelegramBaseController: ViewController, KeyShortcutResponder {
     required public init(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+
+    private var suspendNavigationBarLayout: Bool = false
+    private var suspendedNavigationBarLayout: ContainerViewLayout?
+    private var additionalNavigationBarBackgroundHeight: CGFloat = 0.0
+
+    override open func updateNavigationBarLayout(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
+        if self.suspendNavigationBarLayout {
+            self.suspendedNavigationBarLayout = layout
+            return
+        }
+        self.applyNavigationBarLayout(layout, navigationLayout: self.navigationLayout(layout: layout), additionalBackgroundHeight: self.additionalNavigationBarBackgroundHeight, transition: transition)
+    }
     
     override open func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
+        self.suspendNavigationBarLayout = true
+        
         super.containerLayoutUpdated(layout, transition: transition)
         
-        var navigationHeight = super.navigationHeight
+        var navigationHeight = super.navigationLayout(layout: layout).navigationFrame.maxY - self.additionalNavigationBarHeight
         if !self.displayNavigationBar {
             navigationHeight = 0.0
         }
@@ -405,14 +403,11 @@ open class TelegramBaseController: ViewController, KeyShortcutResponder {
                     }
                     strongSelf.joinGroupCall(
                         peerId: groupCallPanelData.peerId,
-                        info: groupCallPanelData.info
+                        invite: nil,
+                        activeCall: CachedChannelData.ActiveCall(id: groupCallPanelData.info.id, accessHash: groupCallPanelData.info.accessHash, title: groupCallPanelData.info.title, scheduleTimestamp: groupCallPanelData.info.scheduleTimestamp, subscribedToScheduled: groupCallPanelData.info.subscribedToScheduled)
                     )
                 })
-                if let navigationBar = self.navigationBar {
-                    self.displayNode.insertSubnode(groupCallAccessoryPanel, aboveSubnode: navigationBar)
-                } else {
-                    self.displayNode.addSubnode(groupCallAccessoryPanel)
-                }
+                self.navigationBar?.additionalContentNode.addSubnode(groupCallAccessoryPanel)
                 self.groupCallAccessoryPanel = groupCallAccessoryPanel
                 groupCallAccessoryPanel.frame = panelFrame
                 
@@ -559,11 +554,7 @@ open class TelegramBaseController: ViewController, KeyShortcutResponder {
                         strongSelf.present(controller, in: .window(.root), with: ViewControllerPresentationArguments(presentationAnimation: .modalSheet))
                     }
                 })
-                if let navigationBar = self.navigationBar {
-                    self.displayNode.insertSubnode(locationBroadcastAccessoryPanel, aboveSubnode: navigationBar)
-                } else {
-                    self.displayNode.addSubnode(locationBroadcastAccessoryPanel)
-                }
+                self.navigationBar?.additionalContentNode.addSubnode(locationBroadcastAccessoryPanel)
                 self.locationBroadcastAccessoryPanel = locationBroadcastAccessoryPanel
                 locationBroadcastAccessoryPanel.frame = panelFrame
                 
@@ -805,11 +796,9 @@ open class TelegramBaseController: ViewController, KeyShortcutResponder {
                 }
                 mediaAccessoryPanel.frame = panelFrame
                 if let dismissingPanel = self.dismissingPanel {
-                    self.displayNode.insertSubnode(mediaAccessoryPanel, aboveSubnode: dismissingPanel)
-                } else if let navigationBar = self.navigationBar {
-                    self.displayNode.insertSubnode(mediaAccessoryPanel, belowSubnode: navigationBar)
+                    self.navigationBar?.additionalContentNode.insertSubnode(mediaAccessoryPanel, aboveSubnode: dismissingPanel)
                 } else {
-                    self.displayNode.addSubnode(mediaAccessoryPanel)
+                    self.navigationBar?.additionalContentNode.addSubnode(mediaAccessoryPanel)
                 }
                 self.mediaAccessoryPanel = (mediaAccessoryPanel, type)
                 mediaAccessoryPanel.updateLayout(size: panelFrame.size, leftInset: layout.safeInsets.left, rightInset: layout.safeInsets.right, transition: .immediate)
@@ -841,6 +830,12 @@ open class TelegramBaseController: ViewController, KeyShortcutResponder {
                 }
             })
         }
+
+        self.suspendNavigationBarLayout = false
+        if let suspendedNavigationBarLayout = self.suspendedNavigationBarLayout {
+            self.suspendedNavigationBarLayout = suspendedNavigationBarLayout
+            self.applyNavigationBarLayout(suspendedNavigationBarLayout, navigationLayout: self.navigationLayout(layout: layout), additionalBackgroundHeight: self.additionalNavigationBarBackgroundHeight, transition: transition)
+        }
     }
     
     open var keyShortcuts: [KeyShortcut] {
@@ -851,7 +846,90 @@ open class TelegramBaseController: ViewController, KeyShortcutResponder {
         })]
     }
     
-    open func joinGroupCall(peerId: PeerId, info: GroupCallInfo) {
-        self.context.joinGroupCall(peerId: peerId, activeCall: CachedChannelData.ActiveCall(id: info.id, accessHash: info.accessHash))
+    open func joinGroupCall(peerId: PeerId, invite: String?, activeCall: CachedChannelData.ActiveCall) {
+        let context = self.context
+        let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
+        
+        self.view.endEditing(true)
+        
+        self.context.joinGroupCall(peerId: peerId, invite: invite, requestJoinAsPeerId: { completion in
+            let currentAccountPeer = context.account.postbox.loadedPeerWithId(context.account.peerId)
+            |> map { peer in
+                return [FoundPeer(peer: peer, subscribers: nil)]
+            }
+            let cachedData = context.account.postbox.transaction { transaction -> CachedPeerData? in
+                return transaction.getPeerCachedData(peerId: peerId)
+            }
+            
+            let _ = (combineLatest(currentAccountPeer, cachedGroupCallDisplayAsAvailablePeers(account: context.account, peerId: peerId), cachedData)
+            |> map { currentAccountPeer, availablePeers, cachedData -> ([FoundPeer], CachedPeerData?) in
+                var result = currentAccountPeer
+                result.append(contentsOf: availablePeers)
+                return (result, cachedData)
+            }
+            |> take(1)
+            |> deliverOnMainQueue).start(next: { [weak self] peers, cachedData in
+                guard let strongSelf = self else {
+                    return
+                }
+                
+                var defaultJoinAsPeerId: PeerId?
+                if let cachedData = cachedData as? CachedChannelData {
+                    defaultJoinAsPeerId = cachedData.callJoinPeerId
+                } else if let cachedData = cachedData as? CachedGroupData {
+                    defaultJoinAsPeerId = cachedData.callJoinPeerId
+                }
+                                
+                if peers.count == 1, let peer = peers.first {
+                    completion(peer.peer.id)
+                } else {
+                    if let defaultJoinAsPeerId = defaultJoinAsPeerId {
+                        completion(defaultJoinAsPeerId)
+                    } else {
+                        let controller = ActionSheetController(presentationData: presentationData)
+                        let dismissAction: () -> Void = { [weak controller] in
+                            controller?.dismissAnimated()
+                        }
+                        
+                        var items: [ActionSheetItem] = []
+                        var isGroup = false
+                        for peer in peers {
+                            if peer.peer is TelegramGroup {
+                                isGroup = true
+                                break
+                            } else if let peer = peer.peer as? TelegramChannel, case .group = peer.info {
+                                isGroup = true
+                                break
+                            }
+                        }
+                            
+                        items.append(VoiceChatAccountHeaderActionSheetItem(title: presentationData.strings.VoiceChat_SelectAccount, text: isGroup ? presentationData.strings.VoiceChat_DisplayAsInfoGroup : presentationData.strings.VoiceChat_DisplayAsInfo))
+                        for peer in peers {
+                            var subtitle: String?
+                            if peer.peer.id.namespace == Namespaces.Peer.CloudUser {
+                                subtitle = presentationData.strings.VoiceChat_PersonalAccount
+                            } else if let subscribers = peer.subscribers {
+                                if let peer = peer.peer as? TelegramChannel, case .broadcast = peer.info {
+                                    subtitle = strongSelf.presentationData.strings.Conversation_StatusSubscribers(subscribers)
+                                } else {
+                                    subtitle = strongSelf.presentationData.strings.Conversation_StatusMembers(subscribers)
+                                }
+                            }
+                            
+                            items.append(VoiceChatPeerActionSheetItem(context: context, peer: peer.peer, title: peer.peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder), subtitle: subtitle ?? "", action: {
+                                dismissAction()
+                                completion(peer.peer.id)
+                            }))
+                        }
+                        
+                        controller.setItemGroups([
+                            ActionSheetItemGroup(items: items),
+                            ActionSheetItemGroup(items: [ActionSheetButtonItem(title: presentationData.strings.Common_Cancel, action: { dismissAction() })])
+                        ])
+                        strongSelf.present(controller, in: .window(.root))
+                    }
+                }
+            })
+        }, activeCall: activeCall)
     }
 }

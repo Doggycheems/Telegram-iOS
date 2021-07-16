@@ -68,16 +68,16 @@ private final class ImportManager {
     
     private let account: Account
     private let archivePath: String?
-    private let entries: [(SSZipEntry, String, ChatHistoryImport.MediaType)]
+    private let entries: [(SSZipEntry, String, TelegramEngine.HistoryImport.MediaType)]
     
-    private var session: ChatHistoryImport.Session?
+    private var session: TelegramEngine.HistoryImport.Session?
     
     private let disposable = MetaDisposable()
     
     private let totalBytes: Int
     private let totalMediaBytes: Int
     private let mainFileSize: Int
-    private var pendingEntries: [(SSZipEntry, String, ChatHistoryImport.MediaType)]
+    private var pendingEntries: [(SSZipEntry, String, TelegramEngine.HistoryImport.MediaType)]
     private var entryProgress: [String: (Int, Int)] = [:]
     private var activeEntries: [String: Disposable] = [:]
     
@@ -91,7 +91,7 @@ private final class ImportManager {
         return self.statePromise.get()
     }
     
-    init(account: Account, peerId: PeerId, mainFile: TempBoxFile, archivePath: String?, entries: [(SSZipEntry, String, ChatHistoryImport.MediaType)]) {
+    init(account: Account, peerId: PeerId, mainFile: TempBoxFile, archivePath: String?, entries: [(SSZipEntry, String, TelegramEngine.HistoryImport.MediaType)]) {
         self.account = account
         self.archivePath = archivePath
         self.entries = entries
@@ -101,7 +101,7 @@ private final class ImportManager {
         
         var totalMediaBytes = 0
         for entry in self.entries {
-            self.entryProgress[entry.0.path] = (Int(entry.0.uncompressedSize), 0)
+            self.entryProgress[entry.1] = (Int(entry.0.uncompressedSize), 0)
             totalMediaBytes += Int(entry.0.uncompressedSize)
         }
         self.totalBytes = self.mainFileSize + totalMediaBytes
@@ -114,7 +114,7 @@ private final class ImportManager {
             Logger.shared.log("ChatImportScreen", "    \(entry.1)")
         }
         
-        self.disposable.set((ChatHistoryImport.initSession(account: self.account, peerId: peerId, file: mainFile, mediaCount: Int32(entries.count))
+        self.disposable.set((TelegramEngine(account: self.account).historyImport.initSession(peerId: peerId, file: mainFile, mediaCount: Int32(entries.count))
         |> mapError { error -> ImportError in
             switch error {
             case .chatAdminRequired:
@@ -180,7 +180,7 @@ private final class ImportManager {
             self.failWithError(.generic)
             return
         }
-        self.disposable.set((ChatHistoryImport.startImport(account: self.account, session: session)
+        self.disposable.set((TelegramEngine(account: self.account).historyImport.startImport(session: session)
         |> deliverOnMainQueue).start(error: { [weak self] _ in
             guard let strongSelf = self else {
                 return
@@ -258,7 +258,7 @@ private final class ImportManager {
                 if !pathExtension.isEmpty, let value = TGMimeTypeMap.mimeType(forExtension: pathExtension) {
                     mimeType = value
                 }
-                return ChatHistoryImport.uploadMedia(account: account, session: session, file: tempFile, disposeFileAfterDone: true, fileName: entry.0.path, mimeType: mimeType, type: entry.2)
+                return TelegramEngine(account: account).historyImport.uploadMedia(session: session, file: tempFile, disposeFileAfterDone: true, fileName: entry.0.path, mimeType: mimeType, type: entry.2)
                 |> mapError { error -> ImportError in
                     switch error {
                     case .chatAdminRequired:
@@ -277,8 +277,8 @@ private final class ImportManager {
                 guard let strongSelf = self else {
                     return
                 }
-                if let (size, _) = strongSelf.entryProgress[entry.0.path] {
-                    strongSelf.entryProgress[entry.0.path] = (size, Int(progress * Float(entry.0.uncompressedSize)))
+                if let (size, _) = strongSelf.entryProgress[entry.1] {
+                    strongSelf.entryProgress[entry.1] = (size, Int(progress * Float(entry.0.uncompressedSize)))
                     strongSelf.updateProgress()
                 }
             }, error: { [weak self] error in
@@ -290,8 +290,9 @@ private final class ImportManager {
                 guard let strongSelf = self else {
                     return
                 }
-                Logger.shared.log("ChatImportScreen", "updateState entry \(entry.1) has completed upload")
-                strongSelf.activeEntries.removeValue(forKey: entry.0.path)
+                Logger.shared.log("ChatImportScreen", "updateState entry \(entry.1) has completed upload, previous active entries: \(strongSelf.activeEntries.keys)")
+                strongSelf.activeEntries.removeValue(forKey: entry.1)
+                Logger.shared.log("ChatImportScreen", "removed active entry \(entry.1), current active entries: \(strongSelf.activeEntries.keys)")
                 strongSelf.updateState()
             }))
         }
@@ -533,7 +534,7 @@ public final class ChatImportActivityScreen: ViewController {
             self.radialStatusText.attributedText = NSAttributedString(string: "\(Int(effectiveProgress * 100.0))%", font: Font.with(size: floor(36.0 * maxK), design: .round, weight: .semibold), textColor: self.presentationData.theme.list.itemPrimaryTextColor)
             let radialStatusTextSize = self.radialStatusText.updateLayout(CGSize(width: 200.0, height: .greatestFiniteMagnitude))
             
-            self.progressText.attributedText = NSAttributedString(string: "\(dataSizeString(Int(effectiveProgress * CGFloat(self.totalBytes)))) of \(dataSizeString(Int(1.0 * CGFloat(self.totalBytes))))", font: Font.semibold(17.0), textColor: self.presentationData.theme.list.itemPrimaryTextColor)
+            self.progressText.attributedText = NSAttributedString(string: "\(dataSizeString(Int(effectiveProgress * CGFloat(self.totalBytes)), formatting: DataSizeStringFormatting(presentationData: self.presentationData))) of \(dataSizeString(Int(1.0 * CGFloat(self.totalBytes)), formatting: DataSizeStringFormatting(presentationData: self.presentationData)))", font: Font.semibold(17.0), textColor: self.presentationData.theme.list.itemPrimaryTextColor)
             let progressTextSize = self.progressText.updateLayout(CGSize(width: layout.size.width - 16.0 * 2.0, height: .greatestFiniteMagnitude))
             
             switch self.state {
@@ -731,7 +732,7 @@ public final class ChatImportActivityScreen: ViewController {
     private let mainEntry: TempBoxFile
     private let totalBytes: Int
     private let totalMediaBytes: Int
-    private let otherEntries: [(SSZipEntry, String, ChatHistoryImport.MediaType)]
+    private let otherEntries: [(SSZipEntry, String, TelegramEngine.HistoryImport.MediaType)]
     
     private var importManager: ImportManager?
     private var progressEstimator: ProgressEstimator?
@@ -748,14 +749,14 @@ public final class ChatImportActivityScreen: ViewController {
         }
     }
     
-    public init(context: AccountContext, cancel: @escaping () -> Void, peerId: PeerId, archivePath: String?, mainEntry: TempBoxFile, otherEntries: [(SSZipEntry, String, ChatHistoryImport.MediaType)]) {
+    public init(context: AccountContext, cancel: @escaping () -> Void, peerId: PeerId, archivePath: String?, mainEntry: TempBoxFile, otherEntries: [(SSZipEntry, String, TelegramEngine.HistoryImport.MediaType)]) {
         self.context = context
         self.cancel = cancel
         self.peerId = peerId
         self.archivePath = archivePath
         self.mainEntry = mainEntry
         
-        self.otherEntries = otherEntries.map { entry -> (SSZipEntry, String, ChatHistoryImport.MediaType) in
+        self.otherEntries = otherEntries.map { entry -> (SSZipEntry, String, TelegramEngine.HistoryImport.MediaType) in
             return (entry.0, entry.1, entry.2)
         }
         
@@ -813,7 +814,7 @@ public final class ChatImportActivityScreen: ViewController {
     override public func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
         
-        self.controllerNode.containerLayoutUpdated(layout, navigationHeight: self.navigationHeight, transition: transition)
+        self.controllerNode.containerLayoutUpdated(layout, navigationHeight: self.navigationLayout(layout: layout).navigationFrame.maxY, transition: transition)
     }
     
     private func beginImport() {
@@ -822,7 +823,7 @@ public final class ChatImportActivityScreen: ViewController {
         
         let resolvedPeerId: Signal<PeerId, ImportManager.ImportError>
         if self.peerId.namespace == Namespaces.Peer.CloudGroup {
-            resolvedPeerId = convertGroupToSupergroup(account: self.context.account, peerId: self.peerId)
+            resolvedPeerId = self.context.engine.peers.convertGroupToSupergroup(peerId: self.peerId)
             |> mapError { _ -> ImportManager.ImportError in
                 return .generic
             }

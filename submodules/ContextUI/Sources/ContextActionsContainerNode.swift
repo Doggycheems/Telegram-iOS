@@ -69,7 +69,7 @@ private final class InnerActionsContainerNode: ASDisplayNode {
         }
     }
     
-    init(presentationData: PresentationData, items: [ContextMenuItem], getController: @escaping () -> ContextController?, actionSelected: @escaping (ContextMenuActionResult) -> Void, feedbackTap: @escaping () -> Void, blurBackground: Bool) {
+    init(presentationData: PresentationData, items: [ContextMenuItem], getController: @escaping () -> ContextControllerProtocol?, actionSelected: @escaping (ContextMenuActionResult) -> Void, feedbackTap: @escaping () -> Void, blurBackground: Bool) {
         self.presentationData = presentationData
         self.feedbackTap = feedbackTap
         self.blurBackground = blurBackground
@@ -165,8 +165,11 @@ private final class InnerActionsContainerNode: ASDisplayNode {
         gesture.isEnabled = self.panSelectionGestureEnabled
     }
     
-    func updateLayout(widthClass: ContainerViewLayoutSizeClass, constrainedWidth: CGFloat, transition: ContainedViewLayoutTransition) -> CGSize {
+    func updateLayout(widthClass: ContainerViewLayoutSizeClass, constrainedWidth: CGFloat, minimalWidth: CGFloat?, transition: ContainedViewLayoutTransition) -> CGSize {
         var minActionsWidth: CGFloat = 250.0
+        if let minimalWidth = minimalWidth, minimalWidth > minActionsWidth {
+            minActionsWidth = minimalWidth
+        }
         
         switch widthClass {
         case .compact:
@@ -439,6 +442,7 @@ private final class InnerTextSelectionTipContainerNode: ASDisplayNode {
 final class ContextActionsContainerNode: ASDisplayNode {
     private let blurBackground: Bool
     private let shadowNode: ASImageNode
+    private let additionalShadowNode: ASImageNode?
     private let additionalActionsNode: InnerActionsContainerNode?
     private let actionsNode: InnerActionsContainerNode
     private let textSelectionTipNode: InnerTextSelectionTipContainerNode?
@@ -456,7 +460,7 @@ final class ContextActionsContainerNode: ASDisplayNode {
         return self.additionalActionsNode != nil
     }
     
-    init(presentationData: PresentationData, items: [ContextMenuItem], getController: @escaping () -> ContextController?, actionSelected: @escaping (ContextMenuActionResult) -> Void, feedbackTap: @escaping () -> Void, displayTextSelectionTip: Bool, blurBackground: Bool) {
+    init(presentationData: PresentationData, items: [ContextMenuItem], getController: @escaping () -> ContextControllerProtocol?, actionSelected: @escaping (ContextMenuActionResult) -> Void, feedbackTap: @escaping () -> Void, displayTextSelectionTip: Bool, blurBackground: Bool) {
         self.blurBackground = blurBackground
         self.shadowNode = ASImageNode()
         self.shadowNode.displaysAsynchronously = false
@@ -466,10 +470,19 @@ final class ContextActionsContainerNode: ASDisplayNode {
         self.shadowNode.isHidden = true
         
         var items = items
-        if let firstItem = items.first, case let .custom(item, additional) = firstItem, additional {
+        if let firstItem = items.first, case let .custom(_, additional) = firstItem, additional {
+            let additionalShadowNode = ASImageNode()
+            additionalShadowNode.displaysAsynchronously = false
+            additionalShadowNode.displayWithoutProcessing = true
+            additionalShadowNode.image = self.shadowNode.image
+            additionalShadowNode.contentMode = .scaleToFill
+            additionalShadowNode.isHidden = true
+            self.additionalShadowNode = additionalShadowNode
+            
             self.additionalActionsNode = InnerActionsContainerNode(presentationData: presentationData, items: [firstItem], getController: getController, actionSelected: actionSelected, feedbackTap: feedbackTap, blurBackground: blurBackground)
             items.removeFirst()
         } else {
+            self.additionalShadowNode = nil
             self.additionalActionsNode = nil
         }
         
@@ -493,6 +506,7 @@ final class ContextActionsContainerNode: ASDisplayNode {
         super.init()
         
         self.addSubnode(self.shadowNode)
+        self.additionalShadowNode.flatMap(self.addSubnode)
         self.additionalActionsNode.flatMap(self.scrollNode.addSubnode)
         self.scrollNode.addSubnode(self.actionsNode)
         self.textSelectionTipNode.flatMap(self.scrollNode.addSubnode)
@@ -506,11 +520,15 @@ final class ContextActionsContainerNode: ASDisplayNode {
         }
         
         var contentSize = CGSize()
-        let actionsSize = self.actionsNode.updateLayout(widthClass: widthClass, constrainedWidth: constrainedWidth, transition: transition)
+        let actionsSize = self.actionsNode.updateLayout(widthClass: widthClass, constrainedWidth: constrainedWidth, minimalWidth: nil, transition: transition)
             
-        if let additionalActionsNode = self.additionalActionsNode {
-            let additionalActionsSize = additionalActionsNode.updateLayout(widthClass: widthClass, constrainedWidth: actionsSize.width, transition: transition)
+        if let additionalActionsNode = self.additionalActionsNode, let additionalShadowNode = self.additionalShadowNode {
+            let additionalActionsSize = additionalActionsNode.updateLayout(widthClass: widthClass, constrainedWidth: actionsSize.width, minimalWidth: actionsSize.width, transition: transition)
             contentSize = additionalActionsSize
+            
+            let bounds = CGRect(origin: CGPoint(), size: additionalActionsSize)
+            transition.updateFrame(node: additionalShadowNode, frame: bounds.insetBy(dx: -30.0, dy: -30.0))
+            additionalShadowNode.isHidden = widthClass == .compact
             
             transition.updateFrame(node: additionalActionsNode, frame: CGRect(origin: CGPoint(), size: additionalActionsSize))
             contentSize.height += 8.0
@@ -554,12 +572,15 @@ final class ContextActionsContainerNode: ASDisplayNode {
     }
     
     func animateOut(offset: CGFloat, transition: ContainedViewLayoutTransition) {
-        guard let additionalActionsNode = self.additionalActionsNode else {
+        guard let additionalActionsNode = self.additionalActionsNode, let additionalShadowNode = self.additionalShadowNode else {
             return
         }
         
         transition.animatePosition(node: additionalActionsNode, to: CGPoint(x: 0.0, y: offset / 2.0), additive: true)
+        transition.animatePosition(node: additionalShadowNode, to: CGPoint(x: 0.0, y: offset / 2.0), additive: true)
         additionalActionsNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.15, removeOnCompletion: false)
+        additionalShadowNode.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.15, removeOnCompletion: false)
         additionalActionsNode.layer.animateScale(from: 1.0, to: 0.75, duration: 0.15, removeOnCompletion: false)
+        additionalShadowNode.layer.animateScale(from: 1.0, to: 0.75, duration: 0.15, removeOnCompletion: false)
     }
 }

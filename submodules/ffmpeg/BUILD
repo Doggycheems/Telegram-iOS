@@ -175,26 +175,29 @@ genrule(
         mkdir -p "$$YASM_DIR"
         tar -xf "$(location //third-party/yasm:yasm.tar)" -C "$$YASM_DIR"
 
+        VARIANT=release
+
         if [ "$(TARGET_CPU)" == "ios_armv7" ]; then
             BUILD_ARCH="armv7"
         elif [ "$(TARGET_CPU)" == "ios_arm64" ]; then
             BUILD_ARCH="arm64"
         elif [ "$(TARGET_CPU)" == "ios_sim_arm64" ]; then
             BUILD_ARCH="sim_arm64"
+            VARIANT="debug"
         elif [ "$(TARGET_CPU)" == "ios_x86_64" ]; then
             BUILD_ARCH="x86_64"
         else
             echo "Unsupported architecture $(TARGET_CPU)"
         fi
 
-        PATH="$$PATH:$$YASM_DIR" "$$SOURCE_PATH/build-ffmpeg-bazel.sh" release "$$BUILD_ARCH" "$$BUILD_DIR" "$$SOURCE_PATH"
+        PATH="$$PATH:$$YASM_DIR" "$$SOURCE_PATH/build-ffmpeg-bazel.sh" "$$VARIANT" "$$BUILD_ARCH" "$$BUILD_DIR" "$$SOURCE_PATH"
     """ + "\n" + "\n".join([
-        "cp \"$$BUILD_DIR/FFmpeg-iOS/include/{header_path}\" \"$(location Public/ffmpeg/{header_path})\"".format(header_path = header_path) for header_path in ffmpeg_header_paths
+        "cp \"$$BUILD_DIR/FFmpeg-iOS/include/{header_path}\" \"$(location Public/third_party/ffmpeg/{header_path})\"".format(header_path = header_path) for header_path in ffmpeg_header_paths
     ]) + "\n" + "\n".join([
         "cp \"$$BUILD_DIR/FFmpeg-iOS/lib/{lib}\" \"$(location {lib})\"".format(lib = lib) for lib in ffmpeg_libs
     ]),
     outs = [
-        "Public/ffmpeg/{}".format(header_path) for header_path in ffmpeg_header_paths
+        "Public/third_party/ffmpeg/{}".format(header_path) for header_path in ffmpeg_header_paths
     ] + ffmpeg_libs,
     tools = [
         "//third-party/yasm:yasm.tar",
@@ -216,9 +219,10 @@ objc_library(
     name = "ffmpeg",
     module_name = "ffmpeg",
     enable_modules = True,
-    hdrs = ["Public/ffmpeg/" + x for x in ffmpeg_header_paths],
+    hdrs = ["Public/third_party/ffmpeg/" + x for x in ffmpeg_header_paths],
     includes = [
-        "Public/ffmpeg",
+        "Public",
+        "Public/third_party/ffmpeg",
     ],
     sdk_dylibs = [
         "libbz2",

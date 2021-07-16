@@ -12,11 +12,10 @@ from ProjectGeneration import generate
 
 
 class BazelCommandLine:
-    def __init__(self, bazel_path, bazel_x86_64_path, override_bazel_version, override_xcode_version, bazel_user_root):
+    def __init__(self, bazel_path, override_bazel_version, override_xcode_version, bazel_user_root):
         self.build_environment = BuildEnvironment(
             base_path=os.getcwd(),
             bazel_path=bazel_path,
-            bazel_x86_64_path=bazel_x86_64_path,
             override_bazel_version=override_bazel_version,
             override_xcode_version=override_xcode_version
         )
@@ -106,6 +105,15 @@ class BazelCommandLine:
 
     def set_build_number(self, build_number):
         self.build_number = build_number
+
+    def set_custom_target(self, target_name):
+        self.custom_target = target_name
+
+    def set_continue_on_error(self, continue_on_error):
+        self.continue_on_error = continue_on_error
+
+    def set_enable_sandbox(self, enable_sandbox):
+        self.enable_sandbox = enable_sandbox
 
     def set_split_swiftmodules(self, value):
         self.split_submodules = value
@@ -261,10 +269,18 @@ class BazelCommandLine:
             self.build_environment.bazel_path
         ]
         combined_arguments += self.get_startup_bazel_arguments()
-        combined_arguments += [
-            'build',
-            'Telegram/Telegram'
-        ]
+        combined_arguments += ['build']
+
+        if self.custom_target is not None:
+            combined_arguments += [self.custom_target]
+        else:
+            combined_arguments += ['Telegram/Telegram']
+
+        if self.continue_on_error:
+            combined_arguments += ['--keep_going']
+
+        if self.enable_sandbox:
+            combined_arguments += ['--spawn_strategy=sandboxed']
 
         if self.configuration_path is None:
             raise Exception('configuration_path is not defined')
@@ -298,7 +314,6 @@ class BazelCommandLine:
 def clean(arguments):
     bazel_command_line = BazelCommandLine(
         bazel_path=arguments.bazel,
-        bazel_x86_64_path=None,
         override_bazel_version=arguments.overrideBazelVersion,
         override_xcode_version=arguments.overrideXcodeVersion,
         bazel_user_root=arguments.bazelUserRoot
@@ -337,14 +352,9 @@ def resolve_configuration(bazel_command_line: BazelCommandLine, arguments):
         raise Exception('Neither configurationPath nor configurationGenerator are set')
 
 
-def generate_project(arguments):
-    bazel_x86_64_path = None
-    if is_apple_silicon():
-        bazel_x86_64_path = arguments.bazel_x86_64
-            
+def generate_project(arguments):        
     bazel_command_line = BazelCommandLine(
         bazel_path=arguments.bazel,
-        bazel_x86_64_path=bazel_x86_64_path,
         override_bazel_version=arguments.overrideBazelVersion,
         override_xcode_version=arguments.overrideXcodeVersion,
         bazel_user_root=arguments.bazelUserRoot
@@ -360,10 +370,15 @@ def generate_project(arguments):
     bazel_command_line.set_build_number(arguments.buildNumber)
 
     disable_extensions = False
+    disable_provisioning_profiles = False
+    generate_dsym = False
+
     if arguments.disableExtensions is not None:
         disable_extensions = arguments.disableExtensions
     if arguments.disableProvisioningProfiles is not None:
         disable_provisioning_profiles = arguments.disableProvisioningProfiles
+    if arguments.generateDsym is not None:
+        generate_dsym = arguments.generateDsym
     
     call_executable(['killall', 'Xcode'], check_result=False)
 
@@ -371,6 +386,7 @@ def generate_project(arguments):
         build_environment=bazel_command_line.build_environment,
         disable_extensions=disable_extensions,
         disable_provisioning_profiles=disable_provisioning_profiles,
+        generate_dsym=generate_dsym,
         configuration_path=bazel_command_line.configuration_path,
         bazel_app_arguments=bazel_command_line.get_project_generation_arguments()
     )
@@ -379,7 +395,6 @@ def generate_project(arguments):
 def build(arguments):
     bazel_command_line = BazelCommandLine(
         bazel_path=arguments.bazel,
-        bazel_x86_64_path=None,
         override_bazel_version=arguments.overrideBazelVersion,
         override_xcode_version=arguments.overrideXcodeVersion,
         bazel_user_root=arguments.bazelUserRoot
@@ -394,6 +409,9 @@ def build(arguments):
 
     bazel_command_line.set_configuration(arguments.configuration)
     bazel_command_line.set_build_number(arguments.buildNumber)
+    bazel_command_line.set_custom_target(arguments.target)
+    bazel_command_line.set_continue_on_error(arguments.continueOnError)
+    bazel_command_line.set_enable_sandbox(arguments.sandbox)
 
     bazel_command_line.set_split_swiftmodules(not arguments.disableParallelSwiftmoduleGeneration)
 
@@ -491,13 +509,6 @@ if __name__ == '__main__':
     )
 
     generateProjectParser = subparsers.add_parser('generateProject', help='Generate Xcode project')
-    if is_apple_silicon():
-        generateProjectParser.add_argument(
-            '--bazel_x86_64',
-            required=True,
-            help='A standalone bazel x86_64 binary is required to generate a project on Apple Silicon.',
-            metavar='path'
-        )
     generateProjectParser.add_argument(
         '--buildNumber',
         required=False,
@@ -524,6 +535,15 @@ if __name__ == '__main__':
         help='''
             This allows to build the project for simulator without having any codesigning identities installed.
             Building for an actual device will fail.
+            '''
+    )
+
+    generateProjectParser.add_argument(
+        '--generateDsym',
+        action='store_true',
+        default=False,
+        help='''
+            This improves profiling experinence by generating DSYM files. Keep disabled for better build performance.
             '''
     )
 
@@ -554,6 +574,24 @@ if __name__ == '__main__':
         action='store_true',
         default=False,
         help='Generate .swiftmodule files in parallel to building modules, can speed up compilation on multi-core systems.'
+    )
+    buildParser.add_argument(
+        '--target',
+        type=str,
+        help='A custom bazel target name to build.',
+        metavar='target_name'
+    )
+    buildParser.add_argument(
+        '--continueOnError',
+        action='store_true',
+        default=False,
+        help='Continue build process after an error.',
+    )
+    buildParser.add_argument(
+        '--sandbox',
+        action='store_true',
+        default=False,
+        help='Enable sandbox.',
     )
 
     if len(sys.argv) < 2:
